@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-unix:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            artifact: funliday-linux-x86_64
+          - runner: ubuntu-24.04-arm
+            artifact: funliday-linux-aarch64
+          - runner: macos-15-intel
+            artifact: funliday-macos-x86_64
+          - runner: macos-15
+            artifact: funliday-macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir package
+          cp target/release/funliday package/funliday
+          tar -C package -czf "${{ matrix.artifact }}.tar.gz" funliday
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path target/release/funliday.exe -DestinationPath funliday-windows-x86_64.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: funliday-windows-x86_64.zip

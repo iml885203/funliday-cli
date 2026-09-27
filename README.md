@@ -16,17 +16,35 @@ The older public developer portal exists at `api.funliday.com`, but currently
 returns a Heroku application error. Funliday's separate public Data API exposes
 aggregate travel datasets, not personal itinerary management.
 
-## Build and try
+## Install
+
+macOS and Linux users can install a prebuilt binary without Rust:
 
 ```bash
-cargo build --release
-./target/release/funliday login
-./target/release/funliday status
-./target/release/funliday trips list
-./target/release/funliday trips show <trip-id>
-./target/release/funliday cities search 福岡
-./target/release/funliday places search 櫛田神社
-./target/release/funliday capabilities
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/iml885203/funliday-cli/main/install.sh | sh
+```
+
+The installer places `funliday` in `~/.local/bin` by default. Windows users can
+download `funliday-windows-x86_64.zip` from GitHub Releases and place
+`funliday.exe` somewhere on `PATH`.
+
+To build from source instead:
+
+```bash
+cargo install --git https://github.com/iml885203/funliday-cli
+```
+
+## Login and basic use
+
+```bash
+funliday login
+funliday status
+funliday trips list
+funliday trips show <trip-id>
+funliday cities search 福岡
+funliday places search 櫛田神社
+funliday capabilities
 ```
 
 Create and delete operations require an explicit confirmation flag. Creation
@@ -73,6 +91,28 @@ Transportation fields belong to the departure place: an `<item-id>` describes
 the segment from that place to the next place on the same day. Automatic route
 calculation requires the POI Bank session captured by a recent `funliday login`.
 
+### Hermes Agent
+
+After installing and logging in, register the write-enabled MCP server:
+
+```bash
+hermes mcp add funliday --command "$(command -v funliday)" \
+  --args mcp --enable-write
+hermes mcp test funliday
+```
+
+Accept the prompt to enable all tools, then start a new Hermes session or
+restart a running gateway. MCP write tools still require `confirm: true`, so
+enabling them does not bypass the server's write guard.
+
+Example verification prompt:
+
+```text
+Use the Funliday MCP tools to list my private trips. Do not modify anything.
+```
+
+## Authentication and privacy
+
 Login opens Funliday's official page in an isolated Chrome profile. Passwords and
 social-login credentials stay on that page. The resulting session token is stored
 in the operating system's standard config directory as a mode-`0600` file on Unix;
@@ -80,3 +120,12 @@ the project does not require macOS Keychain.
 
 Do not commit the local config directory, browser profile, tokens, captured
 requests, or personal itinerary exports.
+
+## Limitations
+
+- This is an unofficial client for undocumented Funliday interfaces, which may
+  change without notice.
+- Native flight creation is available in the Funliday app but is not exposed by
+  this CLI. Flights can be represented with custom travel time and notes.
+- Login requires Chrome or a compatible Chromium installation. After login,
+  normal CLI and MCP use is headless.
