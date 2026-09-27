@@ -70,7 +70,9 @@ fn tools(enable_write: bool) -> Vec<Value> {
         result.push(json!({"name":"add_trip_place","description":"Add a searched place to a numbered trip day.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"day":{"type":"integer","minimum":1},"poi_id":{"type":"string"},"name":{"type":"string"},"latitude":{"type":"number"},"longitude":{"type":"number"},"stay_minutes":{"type":"integer","minimum":0,"default":60},"confirm":{"const":true}},"required":["trip_id","day","poi_id","name","latitude","longitude","confirm"]}}));
         result.push(json!({"name":"add_custom_trip_place","description":"Add a custom place when Funliday search has no suitable result.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"day":{"type":"integer","minimum":1},"name":{"type":"string"},"address":{"type":"string","default":""},"latitude":{"type":"number"},"longitude":{"type":"number"},"stay_minutes":{"type":"integer","minimum":0,"default":60},"confirm":{"const":true}},"required":["trip_id","day","name","latitude","longitude","confirm"]}}));
         result.push(json!({"name":"set_trip_place_time","description":"Set a trip place's fixed local start time and stay duration.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"start_seconds":{"type":"integer","minimum":0,"maximum":86399},"stay_minutes":{"type":"integer","minimum":0},"confirm":{"const":true}},"required":["trip_id","item_id","start_seconds","stay_minutes","confirm"]}}));
-        result.push(json!({"name":"set_trip_place_transport","description":"Set custom travel time for the segment arriving at a place.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"duration_minutes":{"type":"integer","minimum":0},"confirm":{"const":true}},"required":["trip_id","item_id","duration_minutes","confirm"]}}));
+        result.push(json!({"name":"set_trip_place_transport","description":"Set custom travel time from this place to the next one.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"duration_minutes":{"type":"integer","minimum":0},"confirm":{"const":true}},"required":["trip_id","item_id","duration_minutes","confirm"]}}));
+        result.push(json!({"name":"use_automatic_trip_place_transport","description":"Let Funliday calculate travel time from this place to the next one.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","confirm"]}}));
+        result.push(json!({"name":"calculate_trip_place_transport","description":"Ask Funliday to calculate the route from this place to the next one.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","confirm"]}}));
         result.push(json!({"name":"set_trip_place_note","description":"Replace a trip place note.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"note":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","note","confirm"]}}));
         result.push(json!({"name":"delete_trip_place","description":"Permanently delete one place from a trip.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","confirm"]}}));
     }
@@ -172,6 +174,24 @@ async fn call_tool(client: &FunlidayClient, enable_write: bool, params: Value) -
                 )
                 .await?
         }
+        "use_automatic_trip_place_transport" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .use_automatic_transport(
+                    required_string(&args, "trip_id")?,
+                    required_string(&args, "item_id")?,
+                )
+                .await?
+        }
+        "calculate_trip_place_transport" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .calculate_transport_route(
+                    required_string(&args, "trip_id")?,
+                    required_string(&args, "item_id")?,
+                )
+                .await?
+        }
         "get_trip_place_note" => {
             client
                 .get_place_note(
@@ -205,6 +225,8 @@ async fn call_tool(client: &FunlidayClient, enable_write: bool, params: Value) -
         | "add_custom_trip_place"
         | "set_trip_place_time"
         | "set_trip_place_transport"
+        | "use_automatic_trip_place_transport"
+        | "calculate_trip_place_transport"
         | "set_trip_place_note"
         | "delete_trip_place" => {
             bail!("write tools are disabled; restart with --enable-write")

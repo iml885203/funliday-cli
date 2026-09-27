@@ -28,6 +28,9 @@ struct DebugTarget {
 struct BrowserCredentials {
     access_token: Option<String>,
     member_id: Option<String>,
+    poi_bank_token: Option<String>,
+    client_id: Option<String>,
+    server_header: Option<String>,
 }
 
 pub async fn login() -> Result<Credentials> {
@@ -100,7 +103,7 @@ async fn read_credentials(port: u16) -> Result<Option<Credentials>> {
     let (mut stream, _) = connect_async(socket).await?;
     stream.send(Message::Text(json!({
         "id": 1, "method": "Runtime.evaluate", "params": {
-            "expression": "JSON.stringify({access_token:(()=>{try{const v=JSON.parse(localStorage.getItem('fld-accessToken'));return v&&v.token}catch(e){return null}})(),member_id:(()=>{try{return JSON.parse(localStorage.getItem('fld-memberId'))}catch(e){return localStorage.getItem('fld-memberId')}})()})",
+            "expression": "JSON.stringify({access_token:(()=>{try{const v=JSON.parse(localStorage.getItem('fld-accessToken'));return v&&v.token}catch(e){return null}})(),member_id:(()=>{try{return JSON.parse(localStorage.getItem('fld-memberId'))}catch(e){return localStorage.getItem('fld-memberId')}})(),poi_bank_token:(()=>{try{const v=JSON.parse(localStorage.getItem('fld-poibankToken'));return v&&v.token}catch(e){return null}})(),client_id:(()=>{try{return JSON.parse(localStorage.getItem('fld-clientId'))}catch(e){return localStorage.getItem('fld-clientId')}})(),server_header:localStorage.getItem('serverHeaders')})",
             "returnByValue": true
         }
     }).to_string().into())).await?;
@@ -130,9 +133,18 @@ async fn read_credentials(port: u16) -> Result<Option<Credentials>> {
         return Ok(Some(Credentials {
             access_token,
             member_id,
+            poi_bank_token: credentials.poi_bank_token,
+            client_id: credentials.client_id,
+            server_header: credentials.server_header,
         }));
     }
     Ok(None)
+}
+
+pub async fn capture(port: u16) -> Result<Credentials> {
+    read_credentials(port)
+        .await?
+        .context("no authenticated Funliday page was found on that debug port")
 }
 
 async fn close_browser(port: u16) {

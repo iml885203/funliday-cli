@@ -44,6 +44,8 @@ funliday trips set-place-time <trip-id> <item-id> \
   --start 11:00 --stay-minutes 60 --yes
 funliday trips set-transport <trip-id> <item-id> \
   --duration-minutes 25 --yes
+funliday trips use-auto-transport <trip-id> <item-id> --yes
+funliday trips calculate-transport <trip-id> <item-id> --yes
 funliday trips set-place-note <trip-id> <item-id> \
   --note "Remember to reserve" --yes
 funliday trips show-place-note <trip-id> <item-id>
@@ -66,6 +68,10 @@ write tools, the host must start `funliday mcp --enable-write`; every write call
 must additionally include `confirm: true`. Write tools cover trip creation and
 deletion, searched and custom places, fixed start/stay times, custom travel
 durations, notes, and place deletion.
+
+Transportation fields belong to the departure place: an `<item-id>` describes
+the segment from that place to the next place on the same day. Automatic route
+calculation requires the POI Bank session captured by a recent `funliday login`.
 
 Login opens Funliday's official page in an isolated Chrome profile. Passwords and
 social-login credentials stay on that page. The resulting session token is stored

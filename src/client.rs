@@ -10,6 +10,8 @@ pub struct FunlidayClient {
     http: reqwest::Client,
     base_url: String,
     web_base_url: String,
+    poi_bank_token: Option<String>,
+    device_id: String,
 }
 
 impl FunlidayClient {
@@ -31,11 +33,27 @@ impl FunlidayClient {
             AUTHORIZATION,
             HeaderValue::from_str(&authorization).context("invalid credentials")?,
         );
-        headers.insert("x-funliday-langapp", HeaderValue::from_static("zh-tw"));
+        headers.insert("x-funliday-langapp", HeaderValue::from_static("zh_tw"));
+        headers.insert("x-funliday-os", HeaderValue::from_static("2"));
+        headers.insert("x-funliday-version", HeaderValue::from_static("1.0.0"));
         headers.insert(
             "x-funliday-timezone",
             HeaderValue::from_static("Asia/Taipei"),
         );
+        let device_id = credentials
+            .client_id
+            .clone()
+            .unwrap_or_else(|| "funliday-cli".to_owned());
+        headers.insert(
+            "x-funliday-deviceid",
+            HeaderValue::from_str(&device_id).context("invalid Funliday client ID")?,
+        );
+        if let Some(server_header) = credentials.server_header.as_deref() {
+            headers.insert(
+                "x-funliday-server",
+                HeaderValue::from_str(server_header).context("invalid Funliday server header")?,
+            );
+        }
         let member_json = serde_json::to_string(&credentials.member_id)?;
         let token_json = json!({"token": credentials.access_token}).to_string();
         let member_cookie = urlencoding::encode(&member_json);
@@ -53,6 +71,8 @@ impl FunlidayClient {
             http,
             base_url: format!("{}/", base_url.trim_end_matches('/')),
             web_base_url: format!("{}/", web_base_url.trim_end_matches('/')),
+            poi_bank_token: credentials.poi_bank_token.clone(),
+            device_id,
         })
     }
 
@@ -296,6 +316,99 @@ impl FunlidayClient {
         .await
     }
 
+    pub async fn use_automatic_transport(&self, trip_id: &str, item_id: &str) -> Result<Value> {
+        let trip = self.get_trip(trip_id).await?;
+        ensure_item(&trip, item_id)?;
+        let revision = required_string_value(&trip["itinerary"], "revision")?;
+        self.post(
+            "customizeTransportationTime",
+            &json!({
+                "parseTripObjectId":trip_id,
+                "parsePoiObjectId":item_id,
+                "customizeTransportationTimeFlag":"0",
+                "customizeTransportationTime":"0",
+                "revision":revision,
+                "deviceId":self.device_id
+            }),
+        )
+        .await
+    }
+
+    pub async fn calculate_transport_route(&self, trip_id: &str, item_id: &str) -> Result<Value> {
+        let trip = self.get_trip(trip_id).await?;
+        let items = trip
+            .pointer("/itinerary/pois")
+            .and_then(Value::as_array)
+            .context("Funliday response is missing itinerary places")?;
+        let source = ensure_item(&trip, item_id)?;
+        let day = source
+            .get("daySequence")
+            .and_then(Value::as_u64)
+            .context("Funliday item is missing `daySequence`")?;
+        let source_index = source
+            .get("poiSequenceIndex")
+            .and_then(Value::as_f64)
+            .context("Funliday item is missing `poiSequenceIndex`")?;
+        let destination = items
+            .iter()
+            .filter(|item| item.get("daySequence").and_then(Value::as_u64) == Some(day))
+            .filter_map(|item| {
+                item.get("poiSequenceIndex")
+                    .and_then(Value::as_f64)
+                    .filter(|index| *index > source_index)
+                    .map(|index| (index, item))
+            })
+            .min_by(|(left, _), (right, _)| left.total_cmp(right))
+            .map(|(_, item)| item)
+            .context("the last place of a day has no following route")?;
+        let source_location = source
+            .get("location")
+            .context("source place is missing its location")?;
+        let destination_location = destination
+            .get("location")
+            .context("destination place is missing its location")?;
+        let transportation_type = source
+            .get("transportationType")
+            .and_then(Value::as_str)
+            .unwrap_or("4");
+        let body = json!({
+            "data":{
+                "tripId":trip_id,
+                "routes":[{
+                    "id":item_id,
+                    "location_start":source_location,
+                    "location_end":destination_location,
+                    "transportation_type":transportation_type,
+                    "transit_mode":source.get("transitMode").cloned().unwrap_or(Value::Null),
+                    "driving_restriction":source.get("drivingRestriction").cloned().unwrap_or(Value::Null)
+                }]
+            }
+        });
+        let token = self.poi_bank_token.as_deref().context(
+            "POI Bank session is missing; run `funliday login` again before calculating routes",
+        )?;
+        let response = self
+            .http
+            .post("https://api.poibank.com/v2/routes")
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .context("Funliday route calculation failed")?;
+        let status = response.status();
+        let text = response.text().await?;
+        let value: Value = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "Funliday route calculation returned HTTP {status} with a non-JSON response: {}",
+                text.chars().take(200).collect::<String>()
+            )
+        })?;
+        if !status.is_success() {
+            bail!("Funliday route calculation failed: HTTP {status}, response {value}");
+        }
+        Ok(value)
+    }
+
     pub async fn set_place_note(&self, trip_id: &str, item_id: &str, note: &str) -> Result<Value> {
         let trip = self.get_trip(trip_id).await?;
         ensure_item(&trip, item_id)?;
@@ -475,6 +588,9 @@ mod tests {
         Credentials {
             member_id: "member".into(),
             access_token: "token".into(),
+            poi_bank_token: None,
+            client_id: None,
+            server_header: None,
         }
     }
 

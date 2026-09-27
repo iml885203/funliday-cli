@@ -24,7 +24,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Sign in on Funliday's official page using an isolated Chrome profile.
-    Login,
+    Login {
+        /// Capture an already-open authenticated Chrome debugging session.
+        #[arg(long)]
+        debug_port: Option<u16>,
+    },
     /// Show whether a local session is available (never prints the token).
     Status,
     /// Remove the local session and isolated browser profile.
@@ -138,12 +142,26 @@ enum TripsCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Set custom travel duration for the segment arriving at a place.
+    /// Set custom travel duration from this place to the next one.
     SetTransport {
         id: String,
         item_id: String,
         #[arg(long)]
         duration_minutes: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Let Funliday calculate travel time from this place to the next one.
+    UseAutoTransport {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Ask Funliday to calculate the route from this place to the next one.
+    CalculateTransport {
+        id: String,
+        item_id: String,
         #[arg(long)]
         yes: bool,
     },
@@ -178,8 +196,11 @@ fn parse_time(value: &str) -> std::result::Result<NaiveTime, chrono::ParseError>
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Login => {
-            let credentials = browser_login::login().await?;
+        Command::Login { debug_port } => {
+            let credentials = match debug_port {
+                Some(port) => browser_login::capture(port).await?,
+                None => browser_login::login().await?,
+            };
             auth::save(&credentials)?;
             println!(
                 "{}",
@@ -216,7 +237,7 @@ async fn main() -> Result<()> {
             serde_json::to_string_pretty(&json!({
                 "browserLogin": "implemented",
                 "tripRead": "implemented",
-                "tripWrite": "create/delete trips; add/delete places; edit times, travel durations, and notes",
+                "tripWrite": "create/delete trips; add/delete places; edit times, custom/automatic travel durations, and notes",
                 "mcp": "trip discovery and itinerary management; writes available behind --enable-write",
                 "officialDeveloperPortal": "currently unavailable (Heroku application error)"
             }))?
@@ -330,6 +351,18 @@ async fn main() -> Result<()> {
                     client
                         .set_custom_transport(&id, &item_id, duration_minutes)
                         .await?
+                }
+                TripsCommand::UseAutoTransport { id, item_id, yes } => {
+                    if !yes {
+                        bail!("enabling automatic transportation requires --yes");
+                    }
+                    client.use_automatic_transport(&id, &item_id).await?
+                }
+                TripsCommand::CalculateTransport { id, item_id, yes } => {
+                    if !yes {
+                        bail!("calculating transportation requires --yes");
+                    }
+                    client.calculate_transport_route(&id, &item_id).await?
                 }
                 TripsCommand::ShowPlaceNote { id, item_id } => {
                     client.get_place_note(&id, &item_id).await?

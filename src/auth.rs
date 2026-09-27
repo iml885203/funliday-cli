@@ -13,6 +13,12 @@ const CONFIG_DIR_ENV: &str = "FUNLIDAY_CONFIG_DIR";
 pub struct Credentials {
     pub access_token: String,
     pub member_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poi_bank_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_header: Option<String>,
 }
 
 pub fn load() -> Result<Credentials> {
@@ -91,5 +97,8 @@ fn from_environment() -> Result<Option<Credentials>> {
     Ok(Some(Credentials {
         access_token: access_token.context("FUNLIDAY_ACCESS_TOKEN is required")?,
         member_id: member_id.context("FUNLIDAY_MEMBER_ID is required")?,
+        poi_bank_token: std::env::var("FUNLIDAY_POI_BANK_TOKEN").ok(),
+        client_id: std::env::var("FUNLIDAY_CLIENT_ID").ok(),
+        server_header: std::env::var("FUNLIDAY_SERVER_HEADER").ok(),
     }))
 }
