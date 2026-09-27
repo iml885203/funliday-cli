@@ -8,9 +8,9 @@ Funliday itineraries through a small CLI and a safety-gated MCP server.
 
 ## Status
 
-This repository is in active API-discovery stage. Browser-assisted login and
-read-only access to personal trips are implemented. Write commands and MCP tools
-will be added after their request formats have been safely validated.
+This repository is in active API-discovery stage. Browser-assisted login,
+personal-trip reads, trip creation/deletion, and a safety-gated MCP server are
+implemented. Trip metadata and itinerary-item editing are still being validated.
 
 The older public developer portal exists at `api.funliday.com`, but currently
 returns a Heroku application error. Funliday's separate public Data API exposes
@@ -26,6 +26,30 @@ cargo build --release
 ./target/release/funliday trips show <trip-id>
 ./target/release/funliday capabilities
 ```
+
+Create and delete operations require an explicit confirmation flag. Creation
+currently accepts the Funliday city ID returned by its autocomplete service:
+
+```bash
+funliday trips create --name "Fukuoka" --city 7868657 \
+  --start 2026-10-20 --end 2026-10-21 --trip-type 1 --yes
+funliday trips delete <container-id> --yes
+```
+
+`trips list` returns both the itinerary `_id` and the `containerId`; deletion
+uses the latter.
+
+## MCP server
+
+The stdio MCP server is read-only by default:
+
+```bash
+funliday mcp
+```
+
+It exposes `list_trips` and `get_trip`. To advertise `create_trip` and
+`delete_trip`, the host must start `funliday mcp --enable-write`; every write
+call must additionally include `confirm: true`.
 
 Login opens Funliday's official page in an isolated Chrome profile. Passwords and
 social-login credentials stay on that page. The resulting session token is stored

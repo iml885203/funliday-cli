@@ -9,14 +9,19 @@ const DEFAULT_API_BASE: &str = "https://www.funlidays.com/api/";
 pub struct FunlidayClient {
     http: reqwest::Client,
     base_url: String,
+    web_base_url: String,
 }
 
 impl FunlidayClient {
     pub fn new(credentials: &Credentials) -> Result<Self> {
-        Self::with_base_url(credentials, DEFAULT_API_BASE)
+        Self::with_base_urls(credentials, DEFAULT_API_BASE, "https://www.funliday.com/")
     }
 
-    fn with_base_url(credentials: &Credentials, base_url: &str) -> Result<Self> {
+    fn with_base_urls(
+        credentials: &Credentials,
+        base_url: &str,
+        web_base_url: &str,
+    ) -> Result<Self> {
         let mut headers = HeaderMap::new();
         let authorization = format!(
             "Bearer {}_{}",
@@ -31,12 +36,23 @@ impl FunlidayClient {
             "x-funliday-timezone",
             HeaderValue::from_static("Asia/Taipei"),
         );
+        let member_json = serde_json::to_string(&credentials.member_id)?;
+        let token_json = json!({"token": credentials.access_token}).to_string();
+        let member_cookie = urlencoding::encode(&member_json);
+        let token_cookie = urlencoding::encode(&token_json);
+        headers.insert(
+            "cookie",
+            HeaderValue::from_str(&format!(
+                "fld-memberId={member_cookie}; fld-accessToken={token_cookie}"
+            ))?,
+        );
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .build()?;
         Ok(Self {
             http,
             base_url: format!("{}/", base_url.trim_end_matches('/')),
+            web_base_url: format!("{}/", web_base_url.trim_end_matches('/')),
         })
     }
 
@@ -67,6 +83,62 @@ impl FunlidayClient {
             )
             .await?;
         Ok(json!({"trip":trip,"itinerary":itinerary["results"]}))
+    }
+
+    pub async fn create_trip(
+        &self,
+        name: &str,
+        city_ids: &[String],
+        start: &str,
+        end: &str,
+        trip_type: u8,
+    ) -> Result<Value> {
+        let cities = serde_json::to_string(city_ids)?;
+        self.next_request(
+            reqwest::Method::POST,
+            "api/next/containers",
+            Some(&[
+                ("name", name),
+                ("userCities", &cities),
+                ("dateStart", &start.replace('-', "")),
+                ("dateEnd", &end.replace('-', "")),
+                ("tripType", &trip_type.to_string()),
+            ]),
+        )
+        .await
+    }
+
+    pub async fn delete_trip(&self, container_id: &str) -> Result<Value> {
+        self.next_request(
+            reqwest::Method::DELETE,
+            &format!("api/next/containers/{container_id}"),
+            None,
+        )
+        .await
+    }
+
+    async fn next_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        form: Option<&[(&str, &str)]>,
+    ) -> Result<Value> {
+        let mut request = self
+            .http
+            .request(method, format!("{}{}", self.web_base_url, path));
+        if let Some(form) = form {
+            request = request.form(form);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .context("Funliday returned invalid JSON")?;
+        if !status.is_success() || value.get("success").and_then(Value::as_bool) != Some(true) {
+            bail!("Funliday `{path}` failed: HTTP {status}, response {value}");
+        }
+        Ok(value)
     }
 
     async fn post(&self, path: &str, body: &Value) -> Result<Value> {
@@ -115,9 +187,12 @@ mod tests {
             then.status(200)
                 .json_body(json!({"status":"200","results":{"trips":[]}}));
         });
-        let client =
-            FunlidayClient::with_base_url(&credentials(), &format!("{}/api", server.base_url()))
-                .unwrap();
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
         let result = client.list_trips().await.unwrap();
         assert_eq!(result["results"]["trips"], json!([]));
         mock.assert();
@@ -142,11 +217,55 @@ mod tests {
                 "status":"200","results":{"days":[]}
             }));
         });
-        let client =
-            FunlidayClient::with_base_url(&credentials(), &format!("{}/api", server.base_url()))
-                .unwrap();
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
         let result = client.get_trip("trip-1").await.unwrap();
         assert_eq!(result["trip"]["tripName"], "Test");
         assert_eq!(result["itinerary"]["days"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn creates_trip_with_next_api_cookie_auth() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/next/containers")
+                .header_exists("cookie");
+            then.status(200)
+                .json_body(json!({"success":true,"data":{"id":"container-1"}}));
+        });
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
+        let result = client
+            .create_trip("Test", &["7868657".into()], "2026-10-20", "2026-10-21", 1)
+            .await
+            .unwrap();
+        assert_eq!(result["data"]["id"], "container-1");
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn deletes_container_with_next_api() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(DELETE).path("/api/next/containers/c1");
+            then.status(200).json_body(json!({"success":true}));
+        });
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
+        client.delete_trip("c1").await.unwrap();
+        mock.assert();
     }
 }
