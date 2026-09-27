@@ -62,6 +62,8 @@ fn tools(enable_write: bool) -> Vec<Value> {
         json!({"name":"get_trip","description":"Read a private Funliday trip and its itinerary.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}),
         json!({"name":"search_cities","description":"Search Funliday city IDs for trip creation.","inputSchema":{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"]}}),
         json!({"name":"search_places","description":"Search Funliday/POI Bank places and IDs.","inputSchema":{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"]}}),
+        json!({"name":"list_collection_folders","description":"List the authenticated user's Funliday collection folders.","inputSchema":{"type":"object","properties":{}}}),
+        json!({"name":"list_saved_places","description":"List saved Funliday places, optionally from one collection folder.","inputSchema":{"type":"object","properties":{"folder_id":{"type":"string"}}}}),
         json!({"name":"get_trip_place_note","description":"Read a trip place note.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"}},"required":["trip_id","item_id"]}}),
     ];
     if enable_write {
@@ -75,6 +77,10 @@ fn tools(enable_write: bool) -> Vec<Value> {
         result.push(json!({"name":"calculate_trip_place_transport","description":"Ask Funliday to calculate the route from this place to the next one.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","confirm"]}}));
         result.push(json!({"name":"set_trip_place_note","description":"Replace a trip place note.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"note":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","note","confirm"]}}));
         result.push(json!({"name":"delete_trip_place","description":"Permanently delete one place from a trip.","inputSchema":{"type":"object","properties":{"trip_id":{"type":"string"},"item_id":{"type":"string"},"confirm":{"const":true}},"required":["trip_id","item_id","confirm"]}}));
+        result.push(json!({"name":"create_collection_folder","description":"Create a Funliday collection folder for saved places.","inputSchema":{"type":"object","properties":{"name":{"type":"string","minLength":1},"confirm":{"const":true}},"required":["name","confirm"]}}));
+        result.push(json!({"name":"delete_collection_folder","description":"Permanently delete a Funliday collection folder.","inputSchema":{"type":"object","properties":{"folder_id":{"type":"string"},"confirm":{"const":true}},"required":["folder_id","confirm"]}}));
+        result.push(json!({"name":"save_place","description":"Save a searched Funliday place, optionally into a collection folder.","inputSchema":{"type":"object","properties":{"poi_id":{"type":"string"},"name":{"type":"string","minLength":1},"latitude":{"type":"number"},"longitude":{"type":"number"},"folder_id":{"type":"string"},"confirm":{"const":true}},"required":["poi_id","name","latitude","longitude","confirm"]}}));
+        result.push(json!({"name":"remove_saved_place","description":"Remove a saved place using its collection item ID.","inputSchema":{"type":"object","properties":{"collection_id":{"type":"string"},"folder_id":{"type":"string"},"confirm":{"const":true}},"required":["collection_id","confirm"]}}));
     }
     result
 }
@@ -96,6 +102,12 @@ async fn call_tool(client: &FunlidayClient, enable_write: bool, params: Value) -
         "search_places" => {
             client
                 .search_places(required_string(&args, "query")?)
+                .await?
+        }
+        "list_collection_folders" => client.list_collection_folders().await?,
+        "list_saved_places" => {
+            client
+                .list_collections(args.get("folder_id").and_then(Value::as_str))
                 .await?
         }
         "create_trip" if enable_write => {
@@ -219,6 +231,39 @@ async fn call_tool(client: &FunlidayClient, enable_write: bool, params: Value) -
                 )
                 .await?
         }
+        "create_collection_folder" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .create_collection_folder(required_string(&args, "name")?)
+                .await?
+        }
+        "delete_collection_folder" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .delete_collection_folder(required_string(&args, "folder_id")?)
+                .await?
+        }
+        "save_place" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .save_collection_place(
+                    required_string(&args, "poi_id")?,
+                    required_string(&args, "name")?,
+                    required_f64(&args, "latitude")?,
+                    required_f64(&args, "longitude")?,
+                    args.get("folder_id").and_then(Value::as_str),
+                )
+                .await?
+        }
+        "remove_saved_place" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .remove_collection_place(
+                    required_string(&args, "collection_id")?,
+                    args.get("folder_id").and_then(Value::as_str),
+                )
+                .await?
+        }
         "create_trip"
         | "delete_trip"
         | "add_trip_place"
@@ -228,6 +273,10 @@ async fn call_tool(client: &FunlidayClient, enable_write: bool, params: Value) -
         | "use_automatic_trip_place_transport"
         | "calculate_trip_place_transport"
         | "set_trip_place_note"
+        | "create_collection_folder"
+        | "delete_collection_folder"
+        | "save_place"
+        | "remove_saved_place"
         | "delete_trip_place" => {
             bail!("write tools are disabled; restart with --enable-write")
         }

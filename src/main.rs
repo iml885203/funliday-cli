@@ -50,6 +50,11 @@ enum Command {
         #[command(subcommand)]
         command: PlacesCommand,
     },
+    /// Manage saved places and collection folders.
+    Collections {
+        #[command(subcommand)]
+        command: CollectionsCommand,
+    },
     /// Run a stdio MCP server (read-only unless explicitly enabled).
     Mcp {
         #[arg(long)]
@@ -65,6 +70,53 @@ enum CitiesCommand {
 #[derive(Subcommand)]
 enum PlacesCommand {
     Search { query: String },
+}
+
+#[derive(Subcommand)]
+enum CollectionsCommand {
+    /// List collection folders.
+    Folders,
+    /// List saved places, optionally within one folder.
+    List {
+        #[arg(long)]
+        folder: Option<String>,
+    },
+    /// Create a collection folder.
+    CreateFolder {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete a collection folder (irreversible).
+    DeleteFolder {
+        folder_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Save a searched Funliday place, optionally into a folder.
+    AddPlace {
+        #[arg(long)]
+        poi: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        latitude: f64,
+        #[arg(long)]
+        longitude: f64,
+        #[arg(long)]
+        folder: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove a saved place using its collection item ID.
+    RemovePlace {
+        collection_id: String,
+        #[arg(long)]
+        folder: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -238,7 +290,8 @@ async fn main() -> Result<()> {
                 "browserLogin": "implemented",
                 "tripRead": "implemented",
                 "tripWrite": "create/delete trips; add/delete places; edit times, custom/automatic travel durations, and notes",
-                "mcp": "trip discovery and itinerary management; writes available behind --enable-write",
+                "collections": "list folders and saved places; create/delete folders; save/remove places",
+                "mcp": "trip, itinerary, and collection management; writes available behind --enable-write",
                 "officialDeveloperPortal": "currently unavailable (Heroku application error)"
             }))?
         ),
@@ -398,6 +451,55 @@ async fn main() -> Result<()> {
             let client = FunlidayClient::new(&auth::load()?)?;
             let value = match command {
                 PlacesCommand::Search { query } => client.search_places(&query).await?,
+            };
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Command::Collections { command } => {
+            let client = FunlidayClient::new(&auth::load()?)?;
+            let value = match command {
+                CollectionsCommand::Folders => client.list_collection_folders().await?,
+                CollectionsCommand::List { folder } => {
+                    client.list_collections(folder.as_deref()).await?
+                }
+                CollectionsCommand::CreateFolder { name, yes } => {
+                    if !yes {
+                        bail!("creating a collection folder requires --yes");
+                    }
+                    client.create_collection_folder(&name).await?
+                }
+                CollectionsCommand::DeleteFolder { folder_id, yes } => {
+                    if !yes {
+                        bail!("deleting a collection folder requires --yes");
+                    }
+                    client.delete_collection_folder(&folder_id).await?
+                }
+                CollectionsCommand::AddPlace {
+                    poi,
+                    name,
+                    latitude,
+                    longitude,
+                    folder,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("saving a place requires --yes");
+                    }
+                    client
+                        .save_collection_place(&poi, &name, latitude, longitude, folder.as_deref())
+                        .await?
+                }
+                CollectionsCommand::RemovePlace {
+                    collection_id,
+                    folder,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("removing a saved place requires --yes");
+                    }
+                    client
+                        .remove_collection_place(&collection_id, folder.as_deref())
+                        .await?
+                }
             };
             println!("{}", serde_json::to_string_pretty(&value)?);
         }

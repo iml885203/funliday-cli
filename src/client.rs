@@ -143,6 +143,93 @@ impl FunlidayClient {
         Ok(value)
     }
 
+    pub async fn list_collection_folders(&self) -> Result<Value> {
+        self.post(
+            "getCollectionsFolderList",
+            &json!({"deviceId":self.device_id,"skip":"0","limit":"100"}),
+        )
+        .await
+    }
+
+    pub async fn list_collections(&self, folder_id: Option<&str>) -> Result<Value> {
+        let mut body = json!({"deviceId":self.device_id,"skip":"0","limit":"100"});
+        if let Some(folder_id) = folder_id {
+            body["collectionsFolderObjectId"] = json!(folder_id);
+        }
+        self.post("getCollections", &body).await
+    }
+
+    pub async fn create_collection_folder(&self, name: &str) -> Result<Value> {
+        self.post(
+            "createCollectionsFolder",
+            &json!({"deviceId":self.device_id,"folderName":name}),
+        )
+        .await
+    }
+
+    pub async fn delete_collection_folder(&self, folder_id: &str) -> Result<Value> {
+        self.post(
+            "deleteCollectionsFolder",
+            &json!({"deviceId":self.device_id,"collectionsFolderObjectId":folder_id}),
+        )
+        .await
+    }
+
+    pub async fn save_collection_place(
+        &self,
+        poi_id: &str,
+        name: &str,
+        latitude: f64,
+        longitude: f64,
+        folder_id: Option<&str>,
+    ) -> Result<Value> {
+        let action_at = chrono::Utc::now().timestamp().to_string();
+        let saved = self
+            .post(
+                "addCollection",
+                &json!({
+                    "deviceId":self.device_id,
+                    "name":name,
+                    "location":{"lat":latitude,"lng":longitude},
+                    "dataSource":"3",
+                    "poiBankNextId":poi_id,
+                    "infoForPoiBank":{"language":"zh_tw","data":[{"id":poi_id,"actionAt":action_at}]},
+                    "categories":[],
+                    "language":"zh_tw"
+                }),
+            )
+            .await?;
+        let Some(folder_id) = folder_id else {
+            return Ok(saved);
+        };
+        let collection_id = collection_id(&saved).context(
+            "place was saved, but Funliday did not return its collection ID; it was not moved into the requested folder",
+        )?;
+        let moved = self
+            .post(
+                "moveCollectionsToFolder",
+                &json!({
+                    "deviceId":self.device_id,
+                    "idArray":[collection_id],
+                    "toCollectionsFolderObjectId":folder_id
+                }),
+            )
+            .await?;
+        Ok(json!({"saved":saved,"moved":moved}))
+    }
+
+    pub async fn remove_collection_place(
+        &self,
+        collection_id: &str,
+        folder_id: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = json!({"deviceId":self.device_id,"idArray":[collection_id]});
+        if let Some(folder_id) = folder_id {
+            body["collectionsFolderObjectId"] = json!(folder_id);
+        }
+        self.post("deleteCollections", &body).await
+    }
+
     pub async fn add_place(
         &self,
         trip_id: &str,
@@ -524,6 +611,17 @@ impl FunlidayClient {
     }
 }
 
+fn collection_id(value: &Value) -> Option<&str> {
+    [
+        "/results/_id",
+        "/results/collectionObjectId",
+        "/results/parseCollectionObjectId",
+        "/results/collection/_id",
+    ]
+    .into_iter()
+    .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+}
+
 fn required_string_value<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
     value
         .get(key)
@@ -687,6 +785,82 @@ mod tests {
         .unwrap();
         client.delete_trip("c1").await.unwrap();
         mock.assert();
+    }
+
+    #[tokio::test]
+    async fn lists_collection_folders() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/getCollectionsFolderList")
+                .json_body(json!({
+                    "deviceId":"funliday-cli","skip":"0","limit":"100"
+                }));
+            then.status(200).json_body(json!({
+                "status":"200","results":{"collectionsFolders":[]}
+            }));
+        });
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
+        client.list_collection_folders().await.unwrap();
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn saves_a_place_to_the_default_collection() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/api/addCollection");
+            then.status(200)
+                .json_body(json!({"status":"200","results":{"_id":"saved-1"}}));
+        });
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
+        let value = client
+            .save_collection_place("poi-1", "Test place", 25.0, 121.0, None)
+            .await
+            .unwrap();
+        assert_eq!(collection_id(&value), Some("saved-1"));
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn moves_a_saved_place_into_a_folder() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/addCollection");
+            then.status(200)
+                .json_body(json!({"status":"200","results":{"_id":"saved-1"}}));
+        });
+        let move_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/moveCollectionsToFolder")
+                .json_body(json!({
+                    "deviceId":"funliday-cli",
+                    "idArray":["saved-1"],
+                    "toCollectionsFolderObjectId":"folder-1"
+                }));
+            then.status(200).json_body(json!({"status":"200"}));
+        });
+        let client = FunlidayClient::with_base_urls(
+            &credentials(),
+            &format!("{}/api", server.base_url()),
+            &server.base_url(),
+        )
+        .unwrap();
+        client
+            .save_collection_place("poi-1", "Test place", 25.0, 121.0, Some("folder-1"))
+            .await
+            .unwrap();
+        move_mock.assert();
     }
 
     #[test]

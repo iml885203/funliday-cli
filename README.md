@@ -9,8 +9,8 @@ Funliday itineraries through a small CLI and a safety-gated MCP server.
 ## Status
 
 Browser-assisted login, personal-trip reads, trip creation/deletion, place
-search, custom places, fixed times, travel durations, notes, and a safety-gated
-MCP server are implemented.
+search, collection folders and saved places, custom places, fixed times, travel
+durations, notes, and a safety-gated MCP server are implemented.
 
 The older public developer portal exists at `api.funliday.com`, but currently
 returns a Heroku application error. Funliday's separate public Data API exposes
@@ -44,6 +44,8 @@ funliday trips list
 funliday trips show <trip-id>
 funliday cities search 福岡
 funliday places search 櫛田神社
+funliday collections folders
+funliday collections list
 funliday capabilities
 ```
 
@@ -70,6 +72,21 @@ funliday trips show-place-note <trip-id> <item-id>
 funliday trips delete-place <trip-id> <item-id> --yes
 ```
 
+Save candidate places before deciding which day to visit them:
+
+```bash
+funliday collections create-folder --name "2026 九州候選景點" --yes
+funliday collections add-place --poi <poi-id> --name 櫛田神社 \
+  --latitude 33.59295 --longitude 130.41046 --folder <folder-id> --yes
+funliday collections list --folder <folder-id>
+funliday collections remove-place <collection-item-id> --folder <folder-id> --yes
+funliday collections delete-folder <folder-id> --yes
+```
+
+Use `places search` first to obtain a POI ID and coordinates. The folder ID
+comes from `collections folders`; removal uses the saved item's collection ID,
+not its POI ID.
+
 `trips list` returns both the itinerary `_id` and the `containerId`; deletion
 uses the latter.
 
@@ -81,11 +98,10 @@ The stdio MCP server is read-only by default:
 funliday mcp
 ```
 
-It exposes trip reads and city/place search. To advertise trip and itinerary
-write tools, the host must start `funliday mcp --enable-write`; every write call
-must additionally include `confirm: true`. Write tools cover trip creation and
-deletion, searched and custom places, fixed start/stay times, custom travel
-durations, notes, and place deletion.
+It exposes trip and collection reads plus city/place search. To advertise write
+tools, the host must start `funliday mcp --enable-write`; every write call must
+additionally include `confirm: true`. Write tools cover trips, itineraries,
+collection folders, and saving or removing candidate places.
 
 Transportation fields belong to the departure place: an `<item-id>` describes
 the segment from that place to the next place on the same day. Automatic route
