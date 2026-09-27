@@ -4,7 +4,7 @@ mod client;
 mod mcp;
 
 use anyhow::{Result, bail};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveTime, Timelike};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
@@ -36,11 +36,31 @@ enum Command {
         #[command(subcommand)]
         command: TripsCommand,
     },
+    /// Search Funliday city IDs used when creating trips.
+    Cities {
+        #[command(subcommand)]
+        command: CitiesCommand,
+    },
+    /// Search Funliday places and POI IDs.
+    Places {
+        #[command(subcommand)]
+        command: PlacesCommand,
+    },
     /// Run a stdio MCP server (read-only unless explicitly enabled).
     Mcp {
         #[arg(long)]
         enable_write: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum CitiesCommand {
+    Search { query: String },
+}
+
+#[derive(Subcommand)]
+enum PlacesCommand {
+    Search { query: String },
 }
 
 #[derive(Subcommand)]
@@ -71,10 +91,88 @@ enum TripsCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Add a Funliday/POI Bank place to one itinerary day.
+    AddPlace {
+        id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        poi: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        latitude: f64,
+        #[arg(long)]
+        longitude: f64,
+        #[arg(long, default_value_t = 60)]
+        stay_minutes: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Add a custom place when Funliday search has no suitable result.
+    AddCustomPlace {
+        id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "")]
+        address: String,
+        #[arg(long)]
+        latitude: f64,
+        #[arg(long)]
+        longitude: f64,
+        #[arg(long, default_value_t = 60)]
+        stay_minutes: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Set a place's fixed start time and stay duration.
+    SetPlaceTime {
+        id: String,
+        item_id: String,
+        #[arg(long, value_parser = parse_time)]
+        start: NaiveTime,
+        #[arg(long)]
+        stay_minutes: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Set custom travel duration for the segment arriving at a place.
+    SetTransport {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        duration_minutes: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Read a place note.
+    ShowPlaceNote { id: String, item_id: String },
+    /// Replace a place note.
+    SetPlaceNote {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        note: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete one itinerary place.
+    DeletePlace {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn parse_date(value: &str) -> std::result::Result<NaiveDate, chrono::ParseError> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
+}
+
+fn parse_time(value: &str) -> std::result::Result<NaiveTime, chrono::ParseError> {
+    NaiveTime::parse_from_str(value, "%H:%M")
 }
 
 #[tokio::main]
@@ -118,8 +216,8 @@ async fn main() -> Result<()> {
             serde_json::to_string_pretty(&json!({
                 "browserLogin": "implemented",
                 "tripRead": "implemented",
-                "tripWrite": "create and delete implemented; update and itinerary edits pending",
-                "mcp": "read tools implemented; create and delete available behind --enable-write",
+                "tripWrite": "create/delete trips; add/delete places; edit times, travel durations, and notes",
+                "mcp": "trip discovery and itinerary management; writes available behind --enable-write",
                 "officialDeveloperPortal": "currently unavailable (Heroku application error)"
             }))?
         ),
@@ -159,6 +257,114 @@ async fn main() -> Result<()> {
                     }
                     client.delete_trip(&container_id).await?
                 }
+                TripsCommand::AddPlace {
+                    id,
+                    day,
+                    poi,
+                    name,
+                    latitude,
+                    longitude,
+                    stay_minutes,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("adding a place requires --yes");
+                    }
+                    client
+                        .add_place(&id, day, &poi, &name, latitude, longitude, stay_minutes)
+                        .await?
+                }
+                TripsCommand::AddCustomPlace {
+                    id,
+                    day,
+                    name,
+                    address,
+                    latitude,
+                    longitude,
+                    stay_minutes,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("adding a custom place requires --yes");
+                    }
+                    client
+                        .add_custom_place(
+                            &id,
+                            day,
+                            &name,
+                            &address,
+                            latitude,
+                            longitude,
+                            stay_minutes,
+                        )
+                        .await?
+                }
+                TripsCommand::SetPlaceTime {
+                    id,
+                    item_id,
+                    start,
+                    stay_minutes,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("changing a place time requires --yes");
+                    }
+                    client
+                        .update_place_time(
+                            &id,
+                            &item_id,
+                            start.num_seconds_from_midnight(),
+                            stay_minutes,
+                        )
+                        .await?
+                }
+                TripsCommand::SetTransport {
+                    id,
+                    item_id,
+                    duration_minutes,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("changing transportation requires --yes");
+                    }
+                    client
+                        .set_custom_transport(&id, &item_id, duration_minutes)
+                        .await?
+                }
+                TripsCommand::ShowPlaceNote { id, item_id } => {
+                    client.get_place_note(&id, &item_id).await?
+                }
+                TripsCommand::SetPlaceNote {
+                    id,
+                    item_id,
+                    note,
+                    yes,
+                } => {
+                    if !yes {
+                        bail!("changing a place note requires --yes");
+                    }
+                    client.set_place_note(&id, &item_id, &note).await?
+                }
+                TripsCommand::DeletePlace { id, item_id, yes } => {
+                    if !yes {
+                        bail!("deleting a place requires --yes");
+                    }
+                    client.delete_place(&id, &item_id).await?
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Command::Cities { command } => {
+            let client = FunlidayClient::new(&auth::load()?)?;
+            let value = match command {
+                CitiesCommand::Search { query } => client.search_cities(&query).await?,
+            };
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Command::Places { command } => {
+            let client = FunlidayClient::new(&auth::load()?)?;
+            let value = match command {
+                PlacesCommand::Search { query } => client.search_places(&query).await?,
             };
             println!("{}", serde_json::to_string_pretty(&value)?);
         }

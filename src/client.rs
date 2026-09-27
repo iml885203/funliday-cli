@@ -85,6 +85,256 @@ impl FunlidayClient {
         Ok(json!({"trip":trip,"itinerary":itinerary["results"]}))
     }
 
+    pub async fn search_cities(&self, query: &str) -> Result<Value> {
+        let response = self
+            .http
+            .get(format!("{}api/next/autocomplete", self.web_base_url))
+            .query(&[("keyword", query), ("type", "city")])
+            .send()
+            .await
+            .context("Funliday city search failed")?;
+        let status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .context("invalid city search response")?;
+        if !status.is_success() || !value.is_array() {
+            bail!("Funliday city search failed: HTTP {status}, response {value}");
+        }
+        Ok(value)
+    }
+
+    pub async fn search_places(&self, query: &str) -> Result<Value> {
+        let response = self
+            .http
+            .get(format!("{}api/next/autocomplete", self.web_base_url))
+            .query(&[("keyword", query), ("type", "place")])
+            .send()
+            .await
+            .context("Funliday place search failed")?;
+        let status = response.status();
+        let value: Value = response
+            .json()
+            .await
+            .context("invalid place search response")?;
+        if !status.is_success() || !value.is_array() {
+            bail!("Funliday place search failed: HTTP {status}, response {value}");
+        }
+        Ok(value)
+    }
+
+    pub async fn add_place(
+        &self,
+        trip_id: &str,
+        day: u32,
+        poi_id: &str,
+        name: &str,
+        latitude: f64,
+        longitude: f64,
+        stay_minutes: u32,
+    ) -> Result<Value> {
+        let before = self.get_trip(trip_id).await?;
+        let itinerary = &before["itinerary"];
+        let day_count = string_u32(itinerary, "dayCount")?;
+        if day == 0 || day > day_count {
+            bail!("day must be between 1 and {day_count}");
+        }
+        let revision = required_string_value(itinerary, "revision")?;
+        let start = required_string_value(itinerary, "startDate")?
+            .parse::<u64>()
+            .context("invalid trip startDate")?;
+        let previous_matches = matching_place_count(&before, day, poi_id);
+        let action_at = start + u64::from(day - 1) * 86_400;
+        let body = json!({
+            "parseTripObjectId":trip_id,
+            "daySequence":day.to_string(),
+            "revision":revision,
+            "transportationType":"4",
+            "addToCollections":"0",
+            "name":name,
+            "location":{"lat":latitude,"lng":longitude},
+            "dataSource":"3",
+            "infoForPoiBank":{"language":"zh_tw","data":[{"id":poi_id,"actionAt":action_at.to_string()}]},
+            "poiBankNextId":poi_id,
+            "stayTime":(stay_minutes * 60).to_string(),
+            "deviceId":uuid::Uuid::new_v4().to_string()
+        });
+        let response = self
+            .http
+            .post(format!("{}addPoi", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .context("Funliday addPoi request failed")?;
+        let http_status = response.status();
+        let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
+        if http_status.is_success() && value.get("status").and_then(Value::as_str) == Some("200") {
+            return Ok(value);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let after = self.get_trip(trip_id).await?;
+        if matching_place_count(&after, day, poi_id) > previous_matches {
+            return Ok(json!({
+                "status":"200",
+                "reconciled":true,
+                "message":"Funliday committed the place although addPoi returned an error",
+                "trip":after
+            }));
+        }
+        bail!("Funliday `addPoi` failed: HTTP {http_status}, response {value}")
+    }
+
+    pub async fn add_custom_place(
+        &self,
+        trip_id: &str,
+        day: u32,
+        name: &str,
+        address: &str,
+        latitude: f64,
+        longitude: f64,
+        stay_minutes: u32,
+    ) -> Result<Value> {
+        let before = self.get_trip(trip_id).await?;
+        let itinerary = &before["itinerary"];
+        let day_count = string_u32(itinerary, "dayCount")?;
+        if day == 0 || day > day_count {
+            bail!("day must be between 1 and {day_count}");
+        }
+        let revision = required_string_value(itinerary, "revision")?;
+        let start = required_string_value(itinerary, "startDate")?
+            .parse::<u64>()
+            .context("invalid trip startDate")?;
+        let previous_matches = matching_custom_place_count(&before, day, name);
+        let action_at = start + u64::from(day - 1) * 86_400;
+        let body = json!({
+            "parseTripObjectId":trip_id,
+            "daySequence":day.to_string(),
+            "revision":revision,
+            "transportationType":"4",
+            "addToCollections":"0",
+            "name":name,
+            "address":address,
+            "location":{"lat":latitude,"lng":longitude},
+            "dataSource":"4",
+            "infoForPoiBank":{
+                "language":"zh_tw",
+                "name":name,
+                "data":[{"id":address,"actionAt":action_at.to_string()}]
+            },
+            "stayTime":(stay_minutes * 60).to_string(),
+            "deviceId":uuid::Uuid::new_v4().to_string()
+        });
+        let response = self
+            .http
+            .post(format!("{}addPoi", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .context("Funliday addPoi request failed")?;
+        let http_status = response.status();
+        let value: Value = response.json().await.unwrap_or_else(|_| json!({}));
+        if http_status.is_success() && value.get("status").and_then(Value::as_str) == Some("200") {
+            return Ok(value);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let after = self.get_trip(trip_id).await?;
+        if matching_custom_place_count(&after, day, name) > previous_matches {
+            return Ok(json!({
+                "status":"200",
+                "reconciled":true,
+                "message":"Funliday committed the custom place although addPoi returned an error",
+                "trip":after
+            }));
+        }
+        bail!("Funliday custom `addPoi` failed: HTTP {http_status}, response {value}")
+    }
+
+    pub async fn update_place_time(
+        &self,
+        trip_id: &str,
+        item_id: &str,
+        start_seconds: u32,
+        stay_minutes: u32,
+    ) -> Result<Value> {
+        let trip = self.get_trip(trip_id).await?;
+        ensure_item(&trip, item_id)?;
+        let revision = required_string_value(&trip["itinerary"], "revision")?;
+        self.post(
+            "updatePoiStartTime",
+            &json!({
+                "parseTripObjectId":trip_id,
+                "parsePoiObjectId":item_id,
+                "revision":revision,
+                "customizeStartTime":start_seconds.to_string(),
+                "stayTime":(stay_minutes * 60).to_string(),
+                "deviceId":uuid::Uuid::new_v4().to_string()
+            }),
+        )
+        .await
+    }
+
+    pub async fn set_custom_transport(
+        &self,
+        trip_id: &str,
+        item_id: &str,
+        duration_minutes: u32,
+    ) -> Result<Value> {
+        let trip = self.get_trip(trip_id).await?;
+        ensure_item(&trip, item_id)?;
+        let revision = required_string_value(&trip["itinerary"], "revision")?;
+        self.post(
+            "customizeTransportationTime",
+            &json!({
+                "parseTripObjectId":trip_id,
+                "parsePoiObjectId":item_id,
+                "customizeTransportationTimeFlag":"1",
+                "customizeTransportationTime":(duration_minutes * 60).to_string(),
+                "revision":revision,
+                "deviceId":uuid::Uuid::new_v4().to_string()
+            }),
+        )
+        .await
+    }
+
+    pub async fn set_place_note(&self, trip_id: &str, item_id: &str, note: &str) -> Result<Value> {
+        let trip = self.get_trip(trip_id).await?;
+        ensure_item(&trip, item_id)?;
+        self.post(
+            "postTextNote",
+            &json!({
+                "parseTripObjectId":trip_id,
+                "parsePoiObjectId":item_id,
+                "textNote":note,
+                "deviceId":uuid::Uuid::new_v4().to_string()
+            }),
+        )
+        .await
+    }
+
+    pub async fn get_place_note(&self, trip_id: &str, item_id: &str) -> Result<Value> {
+        self.post(
+            "getTextNote",
+            &json!({"parseTripObjectId":trip_id,"parsePoiObjectId":item_id}),
+        )
+        .await
+    }
+
+    pub async fn delete_place(&self, trip_id: &str, item_id: &str) -> Result<Value> {
+        let trip = self.get_trip(trip_id).await?;
+        ensure_item(&trip, item_id)?;
+        let revision = required_string_value(&trip["itinerary"], "revision")?;
+        self.post(
+            "deletePois",
+            &json!({
+                "parseTripObjectId":trip_id,
+                "idArray":[item_id],
+                "revision":revision,
+                "deviceId":uuid::Uuid::new_v4().to_string()
+            }),
+        )
+        .await
+    }
+
     pub async fn create_trip(
         &self,
         name: &str,
@@ -159,6 +409,60 @@ impl FunlidayClient {
         }
         Ok(value)
     }
+}
+
+fn required_string_value<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .with_context(|| format!("Funliday response is missing `{key}`"))
+}
+
+fn string_u32(value: &Value, key: &str) -> Result<u32> {
+    required_string_value(value, key)?
+        .parse()
+        .with_context(|| format!("Funliday `{key}` is not a number"))
+}
+
+fn matching_place_count(trip: &Value, day: u32, poi_id: &str) -> usize {
+    trip.pointer("/itinerary/pois")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.get("daySequence").and_then(Value::as_u64) == Some(u64::from(day))
+                        && item.get("poiBankNextId").and_then(Value::as_str) == Some(poi_id)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn matching_custom_place_count(trip: &Value, day: u32, name: &str) -> usize {
+    trip.pointer("/itinerary/pois")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.get("daySequence").and_then(Value::as_u64) == Some(u64::from(day))
+                        && item.get("name").and_then(Value::as_str) == Some(name)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn ensure_item<'a>(trip: &'a Value, item_id: &str) -> Result<&'a Value> {
+    trip.pointer("/itinerary/pois")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("_id").and_then(Value::as_str) == Some(item_id))
+        })
+        .with_context(|| format!("item `{item_id}` was not found in this trip"))
 }
 
 #[cfg(test)]
@@ -267,5 +571,17 @@ mod tests {
         .unwrap();
         client.delete_trip("c1").await.unwrap();
         mock.assert();
+    }
+
+    #[test]
+    fn counts_custom_places_by_day_and_name() {
+        let trip = json!({"itinerary":{"pois":[
+            {"daySequence":1,"name":"Hotel"},
+            {"daySequence":2,"name":"Hotel"},
+            {"daySequence":2,"name":"Station"}
+        ]}});
+        assert_eq!(matching_custom_place_count(&trip, 1, "Hotel"), 1);
+        assert_eq!(matching_custom_place_count(&trip, 2, "Hotel"), 1);
+        assert_eq!(matching_custom_place_count(&trip, 2, "Missing"), 0);
     }
 }
